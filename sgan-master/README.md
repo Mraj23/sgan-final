@@ -9,8 +9,13 @@ source env/bin/activate
 Files that have been added/modified:
 
 1) Inference.py : contains functions used to evaluate closest interaction distances and baseline model
-2) Train.py : 
-3) Model.py :
+
+Files that need to be modified
+
+3) Train.py  and Model.py : These two files work together. 
+- Model should contain an editted version SGAN's model that immeadiately outputs the closest interaction points rather than future trajectores.
+- Train should be modified to train the new model. This means the loss functions should be changed such that they no longer use a discriminator or decoder. 
+- The fil
 
 
 # Read Me provided by authors of Social GAN
