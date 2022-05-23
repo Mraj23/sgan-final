@@ -1,3 +1,19 @@
+# Read Me - Raj
+
+To run any code, the first thing to be done is activating the virtual environment.
+
+This can be done by running the following line of code:
+
+source env/bin/activate
+
+Files that have been added/modified:
+
+1) Inference.py : contains functions used to evaluate closest interaction distances and baseline model
+2) Train.py : 
+3) Model.py :
+
+
+# Read Me provided by authors of Social GAN
 # Social GAN
 
 This is the code for the paper
