@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 #MLP: multi layer perceptron, has a series of relu layers and activation layers.
 def make_mlp(dim_list, activation='relu', batch_norm=True, dropout=0):
     layers = []
@@ -61,8 +62,8 @@ class Encoder(nn.Module):
         """
         # Encode observed Trajectory with sptial embeddings of peoples location
         batch = obs_traj.size(1)
-        obs_traj_embedding = self.spatial_embedding(obs_traj.view(-1, 2))
-        obs_traj_embedding = obs_traj_embedding.view(
+        obs_traj_embedding = self.spatial_embedding(obs_traj.reshape(-1, 2))
+        obs_traj_embedding = obs_traj_embedding.reshape(
             -1, batch, self.embedding_dim
         )
         state_tuple = self.init_hidden(batch)
@@ -212,8 +213,8 @@ class PoolHiddenNet(nn.Module):
         """
         pool_h = []
         for _, (start, end) in enumerate(seq_start_end):
-            start = start.item()
-            end = end.item()
+            #start = start.item()
+            #end = end.item()
             num_ped = end - start
             curr_hidden = h_states.view(-1, self.h_dim)[start:end]
             curr_end_pos = end_pos[start:end]
@@ -228,19 +229,14 @@ class PoolHiddenNet(nn.Module):
             
             mlp_h_input = torch.cat([curr_rel_embedding, curr_hidden_1], dim=1)
             curr_pool_h = self.mlp_pre_pool(mlp_h_input)
-            print('curr_pool max')
+            
             curr_pool_h = curr_pool_h.view(num_ped, num_ped, -1).max(1)[0]
-            print(curr_pool_h)
-            print(torch.size(curr_pool))
-            print('curr pool 2')
-
-            curr_pool_h = curr_pool_h.view(num_ped, num_ped, -1)
-            print(curr_pool_h) 
-            print(torch.size(curr_pool_h))
+            curr_pool_h = curr_pool_h.repeat(num_ped,1,1)
+           
+            curr_final_h = curr_pool_h.view(num_ped, num_ped, -1)
             #batch x n x n x hidden dimension
             #convolution matters on size of hidden dimensions
-            pool_h.append(curr_pool_h)
-        pool_h = torch.cat(pool_h, dim=0)
+            pool_h.append(curr_pool_h + curr_final_h)
         return pool_h
 
 
@@ -392,6 +388,12 @@ class TrajectoryGenerator(nn.Module):
         self.noise_first_dim = 0
         self.pool_every_timestep = pool_every_timestep
         self.bottleneck_dim = 1024
+        self.conv_hidden_dim = 1024
+        self.conv_output_dim = 2
+        self.conv1 = torch.nn.Conv2d(self.bottleneck_dim,self.conv_hidden_dim,1)
+        self.conv2 = torch.nn.Conv2d(self.conv_hidden_dim,self.conv_hidden_dim,1)
+        self.conv3 = torch.nn.Conv2d(self.conv_hidden_dim,self.conv_output_dim,1)
+        self.relu_activation = torch.nn.ReLU()
 
         self.encoder = Encoder(
             embedding_dim=embedding_dim,
@@ -417,37 +419,24 @@ class TrajectoryGenerator(nn.Module):
             neighborhood_size=neighborhood_size
         )
 
-        if pooling_type == 'pool_net':
-            self.pool_net = PoolHiddenNet(
-                embedding_dim=self.embedding_dim,
-                h_dim=encoder_h_dim,
-                mlp_dim=mlp_dim,
-                bottleneck_dim=bottleneck_dim,
-                activation=activation,
-                batch_norm=batch_norm
-            )
-
-        elif pooling_type == 'spool':
-            self.pool_net = SocialPooling(
-                h_dim=encoder_h_dim,
-                activation=activation,
-                batch_norm=batch_norm,
-                dropout=dropout,
-                neighborhood_size=neighborhood_size,
-                grid_size=grid_size
-            )
+    
+        self.pool_net = PoolHiddenNet(
+            embedding_dim=self.embedding_dim,
+            h_dim=encoder_h_dim,
+            mlp_dim=mlp_dim,
+            bottleneck_dim=bottleneck_dim,
+            activation=activation,
+            batch_norm=batch_norm
+        )
 
         if self.noise_dim[0] == 0:
             self.noise_dim = None
         else:
             self.noise_first_dim = noise_dim[0]
 
-        # Decoder Hidden
-        if pooling_type:
-            input_dim = encoder_h_dim + bottleneck_dim
-        else:
-            input_dim = encoder_h_dim
-
+       
+        input_dim = encoder_h_dim + bottleneck_dim
+        
         if self.mlp_decoder_needed():
             mlp_decoder_context_dims = [
                 input_dim, mlp_dim, decoder_h_dim - self.noise_first_dim
@@ -499,15 +488,15 @@ class TrajectoryGenerator(nn.Module):
         return decoder_h
 
     def mlp_decoder_needed(self):
-        '''if (
-            self.noise_dim or self.pooling_type or
-            self.encoder_h_dim != self.decoder_h_dim
-        ):
-            return True
-        else:
-            return False'''
         
         return False
+    
+    def conv_pool(self, conv_input, num_ped):
+
+        max_output = conv_input.max(1)[0]
+        max_output = max_output.repeat(num_ped,1,1)
+
+        return max_output + conv_input
 
     def forward(self, obs_traj, obs_traj_rel, seq_start_end, user_noise=None): #MODIFY
         """
@@ -524,44 +513,33 @@ class TrajectoryGenerator(nn.Module):
         # Encode seq
         final_encoder_h = self.encoder(obs_traj_rel) 
         # Pool States
-        if self.pooling_type:
-            end_pos = obs_traj[-1, :, :]
-            pool_h = self.pool_net(final_encoder_h, seq_start_end, end_pos)
-            #CONVOLUTION ADDED
-            # Construct input hidden states for decoder
-            mlp_decoder_context_input = torch.cat(
-                [final_encoder_h.view(-1, self.encoder_h_dim), pool_h], dim=1)
-        else:
-            mlp_decoder_context_input = final_encoder_h.view(
-                -1, self.encoder_h_dim)
+       
+        end_pos = obs_traj[-1, :, :]
+        pool_h = self.pool_net(final_encoder_h, seq_start_end, end_pos)
+        #CONVOLUTION ADDED
+        outputs = []
+        for i,tensor_h in enumerate(pool_h):
+            (start,end) = seq_start_end[i]
+            num_ped = end - start
+           # tensor_h = torch.unsqueeze(tensor_h,0)
+            tensor_conv1 = torch.permute(tensor_h, (2, 0, 1))
+            tensor_conv1 = self.relu_activation(self.conv1(tensor_conv1))
+            tensor_conv1 = torch.permute(tensor_conv1, (1, 2, 0))
+            tensor_conv1 = self.conv_pool(tensor_conv1,num_ped)
 
-        # Add Noise
-        if self.mlp_decoder_needed():
-            noise_input = self.mlp_decoder_context(mlp_decoder_context_input)
-        else:
-            noise_input = mlp_decoder_context_input
-        decoder_h = self.add_noise(
-            noise_input, seq_start_end, user_noise=user_noise)
-        decoder_h = torch.unsqueeze(decoder_h, 0)
+            tensor_conv2 = torch.permute(tensor_conv1, (2, 0, 1))
+            tensor_conv2 = self.relu_activation(self.conv2(tensor_conv2))
+            tensor_conv2 = torch.permute(tensor_conv2, (1, 2, 0))
+            tensor_conv2 = self.conv_pool(tensor_conv2,num_ped)
 
-        decoder_c = torch.zeros(
-            self.num_layers, batch, self.decoder_h_dim
-        ).cuda()
+            tensor_conv3 = torch.permute(tensor_conv2, (2, 0, 1))
+            tensor_conv3 = self.relu_activation(self.conv3(tensor_conv3))
+            tensor_conv3 = torch.permute(tensor_conv3, (1, 2, 0))
 
-        state_tuple = (decoder_h, decoder_c)
-        last_pos = obs_traj[-1]
-        last_pos_rel = obs_traj_rel[-1]
-        # Predict Trajectory
+            outputs.append(tensor_conv3)
 
-        decoder_out = self.decoder(
-            last_pos,
-            last_pos_rel,
-            state_tuple,
-            seq_start_end,
-        )
-        pred_traj_fake_rel, final_decoder_h = decoder_out
-
-        return pred_traj_fake_rel
+        return outputs 
+    
 
 
 class TrajectoryDiscriminator(nn.Module):#REMOVE THIS
