@@ -222,11 +222,11 @@ def main(args):
             )
 
 
-            for p in generator.parameters():
+            '''for p in generator.parameters():
                 if p.requires_grad:
                     print(torch.sum(p.grad))
             print(losses_g.item())
-            exit()
+            exit()'''
 
              
             if args.timing == 1:
@@ -298,11 +298,12 @@ def generator_step(args, batch, generator, optimizer_g):
     obs_traj_rel = obs_traj_rel.cuda()
     #ground_truth, mask, render, seq_start_end = ground_truth_list[0], mask_list[0], render_list[0], seq_start_end[0]
     outputs = generator(obs_traj, obs_traj_rel, seq_start_end)
-    
+    print(torch.sum(outputs))
     #loss = torch.zeros(1).to(obs_traj)
     loss = None
     for i in range(len(outputs)):
-        output = outputs[i]
+        num_ped = len(ground_truth_list[i])
+        output = outputs[i,:num_ped,:num_ped]
         ground_truth, mask = ground_truth_list[i], mask_list[i]
         ground_truth = torch.tensor(ground_truth).cuda()
         mask = torch.tensor(mask).cuda()
@@ -338,7 +339,8 @@ def check_accuracy(args, loader, generator):
             
             loss_output = torch.zeros(1).to(obs_traj)
             for i in range(len(outputs)):
-                output = outputs[i]
+                num_ped = len(ground_truth_list[i])
+                output = outputs[i,:num_ped,:num_ped]
                 ground_truth, mask = ground_truth_list[i], mask_list[i]
                 ground_truth = torch.tensor(ground_truth).cuda()
                 mask = torch.tensor(mask).cuda()

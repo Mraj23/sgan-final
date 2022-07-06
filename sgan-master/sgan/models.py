@@ -178,7 +178,7 @@ class PoolHiddenNet(nn.Module):
         self.h_dim = h_dim
         self.bottleneck_dim = bottleneck_dim
         self.embedding_dim = embedding_dim
-
+        self.max_ped = 55
         mlp_pre_dim = embedding_dim + h_dim
         mlp_pre_pool_dims = [mlp_pre_dim, 512, bottleneck_dim]
 
@@ -236,7 +236,10 @@ class PoolHiddenNet(nn.Module):
             curr_final_h = curr_pool_h.view(num_ped, num_ped, -1)
             #batch x n x n x hidden dimension
             #convolution matters on size of hidden dimensions
-            pool_h.append(curr_pool_h + curr_final_h)
+            temp_pool_h = torch.zeros(self.max_ped,self.max_ped,self.bottleneck_dim).cuda()
+            temp_pool_h[:num_ped,:num_ped] = curr_pool_h + curr_final_h
+            pool_h.append(temp_pool_h)
+        pool_h = torch.stack(pool_h, dim = 0)
         return pool_h
 
 
@@ -393,7 +396,7 @@ class TrajectoryGenerator(nn.Module):
         self.conv1 = torch.nn.Conv2d(self.bottleneck_dim,self.conv_hidden_dim,1)
         self.conv2 = torch.nn.Conv2d(self.conv_hidden_dim,self.conv_hidden_dim,1)
         self.conv3 = torch.nn.Conv2d(self.conv_hidden_dim,self.conv_output_dim,1)
-        self.relu_activation = torch.nn.ReLU()
+        self.relu_activation = torch.nn.ReLU(inplace=False)
 
         self.encoder = Encoder(
             embedding_dim=embedding_dim,
@@ -492,11 +495,17 @@ class TrajectoryGenerator(nn.Module):
         return False
     
     def conv_pool(self, conv_input, num_ped):
-
-        max_output = conv_input.max(1)[0]
+        #print(conv_input.size())
+        feature_input = conv_input[:num_ped, :num_ped]
+        max_output = feature_input.max(1)[0]
+        #print('before')
+        #print(max_output.size())
         max_output = max_output.repeat(num_ped,1,1)
-
-        return max_output + conv_input
+        #print('after')
+        #print(max_output.size())
+        output = torch.zeros_like(conv_input).cuda()
+        output[:num_ped, :num_ped] = max_output
+        return conv_input + output
 
     def forward(self, obs_traj, obs_traj_rel, seq_start_end, user_noise=None): #MODIFY
         """
@@ -518,10 +527,11 @@ class TrajectoryGenerator(nn.Module):
         pool_h = self.pool_net(final_encoder_h, seq_start_end, end_pos)
         #CONVOLUTION ADDED
         outputs = []
-        for i,tensor_h in enumerate(pool_h):
-            (start,end) = seq_start_end[i]
+        for i, (start, end) in enumerate(seq_start_end):
+            tensor_h = pool_h[i]
+
             num_ped = end - start
-           # tensor_h = torch.unsqueeze(tensor_h,0)
+           
             tensor_conv1 = torch.permute(tensor_h, (2, 0, 1))
             tensor_conv1 = self.relu_activation(self.conv1(tensor_conv1))
             tensor_conv1 = torch.permute(tensor_conv1, (1, 2, 0))
@@ -533,11 +543,11 @@ class TrajectoryGenerator(nn.Module):
             tensor_conv2 = self.conv_pool(tensor_conv2,num_ped)
 
             tensor_conv3 = torch.permute(tensor_conv2, (2, 0, 1))
-            tensor_conv3 = self.relu_activation(self.conv3(tensor_conv3))
+            tensor_conv3 = self.conv3(tensor_conv3)
             tensor_conv3 = torch.permute(tensor_conv3, (1, 2, 0))
 
             outputs.append(tensor_conv3)
-
+        outputs = torch.stack(outputs, dim = 0)
         return outputs 
     
 
